@@ -2,59 +2,52 @@ import streamlit as st
 import sqlite3
 import hashlib
 from datetime import date
+import socket
+import qrcode
+from io import BytesIO
+import os
 
-# ====================== إعدادات الصفحة وتحسين الموبايل ======================
-st.set_page_config(page_title="مكتب المشروعات", page_icon="💰", layout="wide")
+# ====================== إعدادات الصفحة ======================
+st.set_page_config(page_title="نظام المشروعات الصغيرة", page_icon="💰", layout="centered")
 
-# CSS احترافي للموبايل واللغة العربية
+# الحصول على رابط الشبكة للموبايل
+def get_network_url():
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.connect(("8.8.8.8", 80))
+        ip = s.getsockname()[0]
+        s.close()
+        return f"http://{ip}:8501"
+    except:
+        return "برجاء استخدام رابط المتصفح"
+
+# تنسيق الواجهة (CSS)
 st.markdown("""
     <style>
         @import url('https://fonts.googleapis.com/css2?family=Cairo:wght@400;700&display=swap');
         html, body, [class*="css"] { font-family: 'Cairo', sans-serif; direction: rtl; text-align: right; }
-        
-        /* تحسين شكل الأزرار للموبايل */
-        .stButton>button {
-            width: 100% !important;
-            height: 3.5em;
-            border-radius: 12px;
-            font-size: 18px !important;
-            margin-bottom: 10px;
-            background-color: #007bff;
-            color: white;
-        }
-        
-        /* جعل الحقول مريحة للعين */
-        .stTextInput>div>div>input { font-size: 18px !important; padding: 10px !important; }
-        
-        /* إخفاء القائمة الجانبية في الموبايل لتقليل التشتت */
-        @media (max-width: 768px) {
-            [data-testid="stSidebar"] { display: none; }
-        }
+        .stButton>button { width: 100%; border-radius: 12px; height: 3.5em; font-size: 18px !important; background-color: #007bff; color: white; margin-bottom: 10px; }
+        .stTextInput>div>div>input { font-size: 18px !important; }
     </style>
     """, unsafe_allow_html=True)
 
-# ====================== قاعدة البيانات ======================
+# ====================== قاعدة البيانات (المسار الثابت) ======================
+DB_PATH = os.path.join(os.getcwd(), 'charity_projects.db')
+
 def get_db_connection():
-    # استخدام ملف قاعدة بيانات ثابت
-    return sqlite3.connect('charity_projects.db', check_same_thread=False)
+    return sqlite3.connect(DB_PATH, check_same_thread=False)
 
 def init_db():
     conn = get_db_connection()
     c = conn.cursor()
-    # تأكد من وجود الجداول
+    c.execute('''CREATE TABLE IF NOT EXISTS users (id INTEGER PRIMARY KEY, user TEXT UNIQUE, pwd TEXT, name TEXT, role TEXT, ch_id INTEGER)''')
     c.execute('''CREATE TABLE IF NOT EXISTS eparchies (id INTEGER PRIMARY KEY, name TEXT UNIQUE)''')
     c.execute('''CREATE TABLE IF NOT EXISTS churches (id INTEGER PRIMARY KEY, name TEXT, ep_id INTEGER)''')
-    c.execute('''CREATE TABLE IF NOT EXISTS users (id INTEGER PRIMARY KEY, user TEXT UNIQUE, pwd TEXT, name TEXT, role TEXT, ch_id INTEGER)''')
-    c.execute('''CREATE TABLE IF NOT EXISTS borrowers (id INTEGER PRIMARY KEY, name TEXT, phone TEXT, ch_id INTEGER)''')
-    c.execute('''CREATE TABLE IF NOT EXISTS loans (id INTEGER PRIMARY KEY, b_id INTEGER, amount REAL, inst_count INTEGER, inst_val REAL, status TEXT DEFAULT 'نشط')''')
-    c.execute('''CREATE TABLE IF NOT EXISTS payments (id INTEGER PRIMARY KEY, loan_id INTEGER, p_date TEXT, amount REAL, rec_by TEXT)''')
-    
-    # حساب الأدمن الافتراضي
+    # تأكد من وجود الأدمن الافتراضي
     c.execute("SELECT COUNT(*) FROM users")
     if c.fetchone()[0] == 0:
         hashed = hashlib.sha256("admin123".encode()).hexdigest()
-        c.execute("INSERT INTO users (user, pwd, name, role) VALUES (?, ?, ?, ?)",
-                  ("admin", hashed, "مدير المكتب", "admin"))
+        c.execute("INSERT INTO users (user, pwd, name, role) VALUES (?, ?, ?, ?)", ("admin", hashed, "مدير المكتب", "admin"))
     conn.commit()
     conn.close()
 
@@ -63,7 +56,7 @@ def main():
     init_db()
     
     if 'user' not in st.session_state:
-        st.title("🔐 دخول النظام")
+        st.title("🔐 تسجيل الدخول")
         u = st.text_input("اسم المستخدم")
         p = st.text_input("كلمة السر", type="password")
         if st.button("دخول"):
@@ -73,62 +66,68 @@ def main():
             res = c.fetchone()
             conn.close()
             if res and res[2] == hashlib.sha256(p.encode()).hexdigest():
-                st.session_state.user = {'id':res[0], 'name':res[3], 'role':res[4], 'ch_id':res[5]}
+                st.session_state.user = {'id':res[0], 'name':res[3], 'role':res[4]}
                 st.rerun()
             else:
-                st.error("❌ اسم المستخدم أو الباسورد غلط")
+                st.error("بيانات الدخول غير صحيحة")
     else:
         user = st.session_state.user
-        st.header(f"👋 أهلاً {user['name']}")
+        st.subheader(f"👋 أهلاً بك: {user['name']}")
         
-        # زر الخروج في الأعلى (واضح للموبايل)
         if st.button("🚪 تسجيل خروج"):
             del st.session_state.user
             st.rerun()
 
         st.divider()
+        
+        # القائمة الرئيسية
+        col1, col2 = st.columns(2)
+        with col1:
+            if st.button("👥 إدارة المستخدمين"): st.session_state.page = "users"
+        with col2:
+            if st.button("🏛️ الأبرشيات والكنائس"): st.session_state.page = "setup"
 
-        # أزرار لوحة التحكم (متجاوبة تماماً)
-        if user['role'] == 'admin':
-            st.subheader("🛠️ الإدارة المركزية")
-            c1, c2 = st.columns(2)
-            if c1.button("👥 المستخدمين"): st.session_state.page = "users"
-            if c2.button("⛪ الكنائس والأبرشيات"): st.session_state.page = "church_man"
-            
-            c3, c4 = st.columns(2)
-            if c3.button("👤 المقترضين"): st.session_state.page = "borrowers"
-            if c4.button("💰 إنشاء القروض"): st.session_state.page = "loans"
-            
-            if st.button("📝 تسجيل سداد قسط"): st.session_state.page = "payments"
-        else:
-            if st.button("📝 تسجيل سداد"): st.session_state.page = "payments"
-
-        st.divider()
+        # --- صفحة المستخدمين ---
         page = st.session_state.get('page', 'home')
-        
-        # --- هنا تبدأ الصفحات (سأختصر لك صفحة المستخدمين للتجربة) ---
         if page == "users":
-            st.subheader("إضافة مستخدم جديد")
-            with st.form("add_u"):
-                new_u = st.text_input("اسم الدخول")
-                new_p = st.text_input("الباسورد", type="password")
+            st.markdown("### ➕ إضافة مستخدم جديد")
+            with st.form("new_user_form", clear_on_submit=True):
+                new_u = st.text_input("اسم الدخول (بالإنجليزي)")
+                new_p = st.text_input("كلمة السر", type="password")
                 new_n = st.text_input("الاسم الثلاثي")
-                if st.form_submit_button("حفظ المستخدم"):
-                    conn = get_db_connection()
-                    c = conn.cursor()
-                    h = hashlib.sha256(new_p.encode()).hexdigest()
-                    try:
-                        c.execute("INSERT INTO users (user, pwd, name, role) VALUES (?,?,?,?)", (new_u, h, new_n, 'admin'))
-                        conn.commit()
-                        st.success("✅ تم الحفظ! جرب تخرج وتدخل بيه دلوقتي.")
-                    except: st.error("اسم المستخدم ده موجود قبل كدة!")
-                    conn.close()
-        
-        # يمكنك العودة للرئيسية
+                submit = st.form_submit_button("حفظ الحساب")
+                if submit:
+                    if new_u and new_p and new_n:
+                        conn = get_db_connection()
+                        c = conn.cursor()
+                        h = hashlib.sha256(new_p.encode()).hexdigest()
+                        try:
+                            c.execute("INSERT INTO users (user, pwd, name, role) VALUES (?,?,?,?)", (new_u, h, new_n, 'admin'))
+                            conn.commit()
+                            st.success(f"✅ تم حفظ {new_u} بنجاح! جرب تسجيل الخروج والدخول به.")
+                        except sqlite3.IntegrityError:
+                            st.error("اسم المستخدم موجود بالفعل!")
+                        finally:
+                            conn.close()
+                    else:
+                        st.warning("برجاء ملء كافة الخانات")
+
         if page != 'home':
             if st.button("🔙 العودة للرئيسية"):
                 st.session_state.page = 'home'
                 st.rerun()
+
+        # --- ظهور QR Code في أسفل الصفحة الرئيسية ---
+        if page == 'home':
+            st.divider()
+            st.write("📲 **للدخول من الموبايل:**")
+            url = get_network_url()
+            # في Streamlit Cloud الرابط هو لينك المتصفح نفسه
+            current_url = "https://small-projects-support-app.streamlit.app" 
+            img = qrcode.make(current_url)
+            buf = BytesIO()
+            img.save(buf)
+            st.image(buf, caption="امسح الكود لفتح البرنامج على موبايلك", width=200)
 
 if __name__ == "__main__":
     main()

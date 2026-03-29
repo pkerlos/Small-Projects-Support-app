@@ -1,106 +1,120 @@
 import streamlit as st
 import sqlite3
-from datetime import date
 import hashlib
-import socket
-import qrcode
-from io import BytesIO
+from datetime import date
 
-# ====================== إعدادات الصفحة وتحسين الموبايل ======================
+# ====================== إعدادات الصفحة ======================
 st.set_page_config(page_title="مكتب المشروعات الصغيرة", page_icon="💰", layout="wide")
 
-# CSS لتحسين المظهر على الموبايل واللغة العربية
+# CSS لتحسين المظهر وجعل القائمة واضحة في نصف الصفحة
 st.markdown("""
     <style>
-        @import url('https://fonts.googleapis.com/css2?family=Cairo:wght@400;700&display=swap');
-        html, body, [class*="css"] {
-            font-family: 'Cairo', sans-serif;
-            direction: rtl;
-            text-align: right;
-        }
-        .stButton>button {
-            width: 100%;
-            border-radius: 10px;
-            height: 3em;
+        .stApp {direction: rtl; text-align: right;}
+        .main-btn {
             background-color: #007bff;
             color: white;
-        }
-        /* تحسين شكل المدخلات على الموبايل */
-        .stTextInput>div>div>input {
-            font-size: 18px !important;
+            padding: 20px;
+            border-radius: 10px;
+            text-align: center;
+            margin: 10px;
+            font-size: 20px;
+            cursor: pointer;
         }
     </style>
     """, unsafe_allow_html=True)
 
-# دالة للحصول على آي بي الجهاز لتوليد QR Code
-def get_status_info():
-    try:
-        hostname = socket.gethostname()
-        local_ip = socket.gethostbyname(hostname)
-        return f"http://{local_ip}:8501"
-    except:
-        return None
-
-# ====================== الجزء الخاص بقاعدة البيانات (نفس الكود السابق مع التأكد من وجوده) ======================
+# ====================== قاعدة البيانات ======================
 def get_db_connection():
     return sqlite3.connect('charity_projects.db', check_same_thread=False)
 
-def init_database():
+def init_db():
     conn = get_db_connection()
     c = conn.cursor()
-    # (نفس الجداول السابقة: eparchies, churches, users, borrowers, loans, payments)
-    # ملاحظة: تأكد من إضافة الجداول هنا كما في الكود السابق
-    c.execute('''CREATE TABLE IF NOT EXISTS eparchies (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT UNIQUE)''')
-    c.execute('''CREATE TABLE IF NOT EXISTS churches (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT, eparchy_id INTEGER)''')
-    c.execute('''CREATE TABLE IF NOT EXISTS users (id INTEGER PRIMARY KEY AUTOINCREMENT, username TEXT UNIQUE, password TEXT, full_name TEXT, role TEXT, church_id INTEGER)''')
-    c.execute('''CREATE TABLE IF NOT EXISTS borrowers (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT, phone TEXT, church_id INTEGER)''')
-    c.execute('''CREATE TABLE IF NOT EXISTS loans (id INTEGER PRIMARY KEY AUTOINCREMENT, borrower_id INTEGER, amount REAL, approval_date TEXT, num_installments INTEGER, installment_amount REAL, status TEXT DEFAULT 'active')''')
-    c.execute('''CREATE TABLE IF NOT EXISTS payments (id INTEGER PRIMARY KEY AUTOINCREMENT, loan_id INTEGER, payment_date TEXT, amount REAL, recorded_by INTEGER)''')
+    c.execute('''CREATE TABLE IF NOT EXISTS eparchies (id INTEGER PRIMARY KEY, name TEXT UNIQUE)''')
+    c.execute('''CREATE TABLE IF NOT EXISTS churches (id INTEGER PRIMARY KEY, name TEXT, ep_id INTEGER)''')
+    c.execute('''CREATE TABLE IF NOT EXISTS users (id INTEGER PRIMARY KEY, user TEXT UNIQUE, pwd TEXT, name TEXT, role TEXT, ch_id INTEGER)''')
+    c.execute('''CREATE TABLE IF NOT EXISTS borrowers (id INTEGER PRIMARY KEY, name TEXT, ch_id INTEGER)''')
+    c.execute('''CREATE TABLE IF NOT EXISTS loans (id INTEGER PRIMARY KEY, b_id INTEGER, amount REAL, inst_count INTEGER, inst_val REAL)''')
+    c.execute('''CREATE TABLE IF NOT EXISTS payments (id INTEGER PRIMARY KEY, loan_id INTEGER, p_date TEXT, amount REAL, rec_by INTEGER)''')
     
     c.execute("SELECT COUNT(*) FROM users")
     if c.fetchone()[0] == 0:
         hashed = hashlib.sha256("admin123".encode()).hexdigest()
-        c.execute("INSERT INTO users (username, password, full_name, role) VALUES (?, ?, ?, ?)",
+        c.execute("INSERT INTO users (user, pwd, name, role) VALUES (?, ?, ?, ?)",
                   ("admin", hashed, "مدير المكتب", "admin"))
     conn.commit()
     conn.close()
 
-# (بقية الدوال: hash_password, verify_password, show_login, dashboard, إلخ...)
-# سأضع لك فقط الجزء الخاص بظهور الـ QR Code في الجانب (Sidebar)
-
+# ====================== التطبيق الرئيسي ======================
 def main():
-    init_database()
+    init_db()
     
-    if 'user' not in st.session_state or st.session_state.user is None:
-        # شاشة الدخول
-        st.title("🔐 تسجيل دخول الموظفين")
-        user_input = st.text_input("اسم المستخدم")
-        pass_input = st.text_input("كلمة السر", type="password")
+    if 'user' not in st.session_state:
+        st.title("🔐 دخول نظام المشروعات")
+        u = st.text_input("اسم المستخدم")
+        p = st.text_input("كلمة السر", type="password")
         if st.button("دخول"):
-            # منطق التحقق (كما في الكود السابق)
             conn = get_db_connection()
             c = conn.cursor()
-            c.execute("SELECT * FROM users WHERE username = ?", (user_input,))
+            c.execute("SELECT * FROM users WHERE user=?", (u,))
             res = c.fetchone()
-            if res and res[2] == hashlib.sha256(pass_input.encode()).hexdigest():
-                st.session_state.user = {'id':res[0], 'name':res[3], 'role':res[4], 'church_id':res[5]}
+            if res and res[2] == hashlib.sha256(p.encode()).hexdigest():
+                st.session_state.user = {'id':res[0], 'name':res[3], 'role':res[4], 'ch_id':res[5]}
                 st.rerun()
-            else: st.error("خطأ في البيانات")
-            
+            else: st.error("بيانات خطأ")
     else:
-        # عرض QR Code في القائمة الجانبية للمساعدة في ربط الموبايلات
-        network_url = get_status_info()
-        if network_url:
-            with st.sidebar.expander("📲 ربط الموبايل (Scan QR)"):
-                img = qrcode.make(network_url)
-                buf = BytesIO()
-                img.save(buf)
-                st.image(buf, caption="امسح الكود بالموبايل للدخول")
-                st.code(network_url)
+        user = st.session_state.user
+        st.title(f"👋 مرحباً {user['name']}")
+        
+        # أزرار الخروج والتنقل في الأعلى
+        col_out, col_home = st.columns([1, 5])
+        if col_out.button("🚪 خروج"):
+            del st.session_state.user
+            st.rerun()
 
-        st.sidebar.success(f"مرحباً: {st.session_state.user['name']}")
-        # (بقية منطق الصفحات والتقارير...)
-        st.info("البرنامج جاهز للعمل من الموبايل أو الكمبيوتر")
+        # القائمة الرئيسية في نص الصفحة (Main UI)
+        st.subheader("🛠️ قائمة التحكم الرئيسية")
+        
+        if user['role'] == 'admin':
+            # تقسيم الشاشة لـ 3 أعمدة للأزرار
+            c1, c2, c3 = st.columns(3)
+            
+            # الخيار اللي أنت بتدور عليه "إدارة المستخدمين"
+            if c1.button("👥 إدارة المستخدمين", use_container_width=True): st.session_state.page = "users"
+            if c2.button("⛪ إدارة الكنائس", use_container_width=True): st.session_state.page = "churches"
+            if c3.button("🏛️ إدارة الأبرشيات", use_container_width=True): st.session_state.page = "eparchies"
+            
+            c4, c5, c6 = st.columns(3)
+            if c4.button("👤 إدارة المقترضين", use_container_width=True): st.session_state.page = "borrowers"
+            if c5.button("💰 إنشاء القروض", use_container_width=True): st.session_state.page = "loans"
+            if c6.button("📝 تسجيل سداد", use_container_width=True): st.session_state.page = "payments"
+        else:
+            # لو موظف كنيسة يظهر له السداد فقط
+            if st.button("📝 تسجيل سداد قسط", use_container_width=True): st.session_state.page = "payments"
+
+        st.divider()
+
+        # عرض المحتوى بناءً على الزر المضغوط
+        page = st.session_state.get('page', 'home')
+        
+        if page == "users":
+            st.header("👥 إضافة وتأمين المستخدمين")
+            # هنا كود إضافة المستخدم (اكتب بياناتك الجديدة هنا)
+            with st.form("new_user"):
+                new_u = st.text_input("اسم الدخول الجديد")
+                new_p = st.text_input("الباسورد الجديد", type="password")
+                new_n = st.text_input("الاسم بالكامل")
+                if st.form_submit_button("إضافة"):
+                    conn = get_db_connection()
+                    c = conn.cursor()
+                    h = hashlib.sha256(new_p.encode()).hexdigest()
+                    c.execute("INSERT INTO users (user, pwd, name, role) VALUES (?,?,?,?)", (new_u, h, new_n, 'admin'))
+                    conn.commit()
+                    st.success("تمت الإضافة بنجاح!")
+        
+        elif page == "churches":
+            st.write("واجهة إدارة الكنائس قيد التفعيل...")
+            # (هنا تكملة باقي الصفحات بنفس المنطق)
 
 if __name__ == "__main__":
     main()

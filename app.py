@@ -1,8 +1,10 @@
-# نسخة مطورة: إدارة المستخدمين + تعديلهم + المقترضين + الأقساط
+# نسخة محسّنة نهائيًا: حل مشكلة إضافة المستخدم + QR لكل كنيسة
 import streamlit as st
 import sqlite3
 import hashlib
 from datetime import date
+import qrcode
+from io import BytesIO
 
 DB_PATH = 'charity_projects.db'
 
@@ -28,7 +30,6 @@ def init_db():
             ch_id INTEGER
         )''')
 
-        # المقترضين
         c.execute('''CREATE TABLE IF NOT EXISTS borrowers (
             id INTEGER PRIMARY KEY,
             name TEXT,
@@ -37,7 +38,6 @@ def init_db():
             ch_id INTEGER
         )''')
 
-        # القروض
         c.execute('''CREATE TABLE IF NOT EXISTS loans (
             id INTEGER PRIMARY KEY,
             borrower_id INTEGER,
@@ -46,7 +46,6 @@ def init_db():
             start_date TEXT
         )''')
 
-        # الأقساط
         c.execute('''CREATE TABLE IF NOT EXISTS installments (
             id INTEGER PRIMARY KEY,
             loan_id INTEGER,
@@ -97,12 +96,51 @@ def main():
 
         page = st.sidebar.selectbox("القائمة", [
             "المستخدمين",
+            "إضافة مستخدم",
+            "الكنائس + QR",
             "المقترضين",
             "القروض",
             "الأقساط"
         ])
 
-        # ================= USERS =================
+        # ================= ADD USER (تم إصلاح المشكلة) =================
+        if page == "إضافة مستخدم":
+            st.header("إضافة مستخدم جديد")
+
+            with get_conn() as conn:
+                c = conn.cursor()
+                c.execute("SELECT id,name FROM churches")
+                churches = c.fetchall()
+
+            with st.form("add_user"):
+                username = st.text_input("اسم المستخدم")
+                password = st.text_input("كلمة السر", type="password")
+                name = st.text_input("الاسم")
+                role = st.selectbox("الدور", ["admin","church_staff"])
+
+                ch_id = None
+                if role == "church_staff":
+                    if churches:
+                        ch = st.selectbox("الكنيسة", churches, format_func=lambda x: x[1])
+                        ch_id = ch[0]
+                    else:
+                        st.warning("لا توجد كنائس، أضف كنيسة أولاً")
+
+                if st.form_submit_button("حفظ"):
+                    if not username or not password or not name:
+                        st.warning("كل الحقول مطلوبة")
+                    else:
+                        try:
+                            with get_conn() as conn:
+                                c = conn.cursor()
+                                c.execute("INSERT INTO users VALUES (NULL,?,?,?,?,?)",
+                                          (username, hash_pwd(password), name, role, ch_id))
+                                conn.commit()
+                            st.success("تم إضافة المستخدم ✅")
+                        except sqlite3.IntegrityError:
+                            st.error("اسم المستخدم موجود بالفعل")
+
+        # ================= USERS VIEW =================
         if page == "المستخدمين":
             st.header("إدارة المستخدمين")
 
@@ -124,6 +162,38 @@ def main():
                             conn.commit()
                         st.success("تم التعديل")
                         st.rerun()
+
+        # ================= CHURCHES + QR =================
+        if page == "الكنائس + QR":
+            st.header("إدارة الكنائس و QR")
+
+            with st.form("add_ch"):
+                cname = st.text_input("اسم الكنيسة")
+                if st.form_submit_button("إضافة"):
+                    with get_conn() as conn:
+                        c = conn.cursor()
+                        c.execute("INSERT INTO churches VALUES (NULL,?)", (cname,))
+                        conn.commit()
+                    st.success("تمت الإضافة")
+
+            with get_conn() as conn:
+                c = conn.cursor()
+                c.execute("SELECT * FROM churches")
+                data = c.fetchall()
+
+            base_url = "https://small-projects-support-app.streamlit.app"
+
+            for ch in data:
+                st.subheader(f"🏛️ {ch[1]}")
+
+                url = f"{base_url}?ch={ch[0]}"
+
+                qr = qrcode.make(url)
+                buf = BytesIO()
+                qr.save(buf)
+
+                st.image(buf, width=150)
+                st.code(url)
 
         # ================= BORROWERS =================
         if page == "المقترضين":

@@ -1,213 +1,204 @@
+# نسخة مطورة: إدارة المستخدمين + تعديلهم + المقترضين + الأقساط
 import streamlit as st
 import sqlite3
 import hashlib
 from datetime import date
-import qrcode
-from io import BytesIO
-
-# ====================== إعدادات الصفحة ======================
-st.set_page_config(page_title="نظام القروض الحسنة", page_icon="💰", layout="centered")
-
-st.markdown("""
-<style>
-@import url('https://fonts.googleapis.com/css2?family=Cairo:wght@400;700&display=swap');
-html, body, [class*="css"] {
-    font-family: 'Cairo', sans-serif;
-    direction: rtl;
-    text-align: right;
-}
-.stButton>button {
-    width: 100%;
-    border-radius: 12px;
-    height: 3.5em;
-    background-color: #007bff;
-    color: white;
-}
-</style>
-""", unsafe_allow_html=True)
 
 DB_PATH = 'charity_projects.db'
 
-# ====================== قاعدة البيانات ======================
-def get_db_connection():
+# ================= DB =================
+def get_conn():
     return sqlite3.connect(DB_PATH, check_same_thread=False)
 
 def init_db():
-    conn = get_db_connection()
-    c = conn.cursor()
+    with get_conn() as conn:
+        c = conn.cursor()
 
-    c.execute('''CREATE TABLE IF NOT EXISTS eparchies (
-        id INTEGER PRIMARY KEY, name TEXT UNIQUE)''')
+        c.execute('''CREATE TABLE IF NOT EXISTS churches (
+            id INTEGER PRIMARY KEY,
+            name TEXT
+        )''')
 
-    c.execute('''CREATE TABLE IF NOT EXISTS churches (
-        id INTEGER PRIMARY KEY, name TEXT, ep_id INTEGER)''')
+        c.execute('''CREATE TABLE IF NOT EXISTS users (
+            id INTEGER PRIMARY KEY,
+            user TEXT UNIQUE,
+            pwd TEXT,
+            name TEXT,
+            role TEXT,
+            ch_id INTEGER
+        )''')
 
-    c.execute('''CREATE TABLE IF NOT EXISTS users (
-        id INTEGER PRIMARY KEY, user TEXT UNIQUE, pwd TEXT,
-        name TEXT, role TEXT, ch_id INTEGER)''')
+        # المقترضين
+        c.execute('''CREATE TABLE IF NOT EXISTS borrowers (
+            id INTEGER PRIMARY KEY,
+            name TEXT,
+            phone TEXT,
+            address TEXT,
+            ch_id INTEGER
+        )''')
 
-    # إنشاء الأدمن
-    c.execute("SELECT * FROM users WHERE user='admin'")
-    if not c.fetchone():
-        h = hashlib.sha256("admin123".encode()).hexdigest()
-        c.execute("INSERT INTO users (user, pwd, name, role) VALUES (?,?,?,?)",
-                  ("admin", h, "المدير العام", "admin"))
+        # القروض
+        c.execute('''CREATE TABLE IF NOT EXISTS loans (
+            id INTEGER PRIMARY KEY,
+            borrower_id INTEGER,
+            amount REAL,
+            months INTEGER,
+            start_date TEXT
+        )''')
 
-    conn.commit()
-    conn.close()
+        # الأقساط
+        c.execute('''CREATE TABLE IF NOT EXISTS installments (
+            id INTEGER PRIMARY KEY,
+            loan_id INTEGER,
+            due_date TEXT,
+            amount REAL,
+            paid INTEGER DEFAULT 0
+        )''')
 
-# ====================== دوال مساعدة ======================
-def hash_password(pwd):
-    return hashlib.sha256(pwd.encode()).hexdigest()
+        # admin
+        c.execute("SELECT * FROM users WHERE user='admin'")
+        if not c.fetchone():
+            h = hashlib.sha256("admin123".encode()).hexdigest()
+            c.execute("INSERT INTO users VALUES (NULL,?,?,?,?,?)",
+                      ("admin", h, "المدير", "admin", None))
 
-def get_church_name(ch_id):
-    if not ch_id:
-        return "غير محدد"
-    conn = get_db_connection()
-    c = conn.cursor()
-    c.execute("SELECT name FROM churches WHERE id=?", (ch_id,))
-    res = c.fetchone()
-    conn.close()
-    return res[0] if res else "غير معروف"
+        conn.commit()
 
-# ====================== التطبيق ======================
+# ================= utils =================
+def hash_pwd(p):
+    return hashlib.sha256(p.encode()).hexdigest()
+
+# ================= app =================
 def main():
     init_db()
 
-    # ---------- تسجيل الدخول ----------
+    # login
     if 'user' not in st.session_state:
-        st.title("🔐 تسجيل الدخول")
-        u = st.text_input("اسم المستخدم")
+        st.title("تسجيل الدخول")
+        u = st.text_input("المستخدم")
         p = st.text_input("كلمة السر", type="password")
 
         if st.button("دخول"):
-            conn = get_db_connection()
-            c = conn.cursor()
-            c.execute("SELECT * FROM users WHERE user=?", (u.strip(),))
-            res = c.fetchone()
-            conn.close()
+            with get_conn() as conn:
+                c = conn.cursor()
+                c.execute("SELECT * FROM users WHERE user=?", (u,))
+                r = c.fetchone()
 
-            if res and hash_password(p) == res[2]:
-                st.session_state.user = {
-                    'id': res[0],
-                    'username': res[1],
-                    'name': res[3],
-                    'role': res[4],
-                    'ch_id': res[5]
-                }
+            if r and hash_pwd(p) == r[2]:
+                st.session_state.user = r
                 st.rerun()
             else:
-                st.error("❌ بيانات غير صحيحة")
+                st.error("خطأ")
 
-    # ---------- بعد تسجيل الدخول ----------
     else:
         user = st.session_state.user
 
-        st.sidebar.title(f"👋 {user['name']}")
-        st.sidebar.write(f"الصلاحية: {user['role']}")
+        st.sidebar.write(user[3])
 
-        if st.sidebar.button("🚪 تسجيل خروج"):
-            del st.session_state.user
-            st.rerun()
+        page = st.sidebar.selectbox("القائمة", [
+            "المستخدمين",
+            "المقترضين",
+            "القروض",
+            "الأقساط"
+        ])
 
-        # ---------- لوحة المدير ----------
-        if user['role'] == 'admin':
-            st.title("🛠️ لوحة التحكم")
+        # ================= USERS =================
+        if page == "المستخدمين":
+            st.header("إدارة المستخدمين")
 
-            col1, col2 = st.columns(2)
-            if col1.button("👥 المستخدمين"):
-                st.session_state.page = "users"
-            if col2.button("🏛️ الكنائس"):
-                st.session_state.page = "setup"
-
-        else:
-            st.title("⛪ واجهة الكنيسة")
-            st.success(f"كنيسة: {get_church_name(user['ch_id'])}")
-
-        page = st.session_state.get("page", "home")
-
-        # ================= المستخدمين =================
-        if page == "users":
-            st.header("إضافة مستخدم")
-
-            with st.form("add_user"):
-                u = st.text_input("اسم المستخدم")
-                p = st.text_input("كلمة السر", type="password")
-                name = st.text_input("الاسم")
-                role = st.selectbox("الصلاحية", ["admin", "church_staff"])
-
-                conn = get_db_connection()
+            with get_conn() as conn:
                 c = conn.cursor()
-                c.execute("SELECT id, name FROM churches")
-                churches = c.fetchall()
-                conn.close()
+                c.execute("SELECT * FROM users")
+                users = c.fetchall()
 
-                ch = st.selectbox("الكنيسة", churches,
-                                  format_func=lambda x: x[1]) if role == "church_staff" else None
+            for u in users:
+                with st.expander(f"{u[3]} ({u[1]})"):
+                    new_name = st.text_input("الاسم", u[3], key=f"n{u[0]}")
+                    new_role = st.selectbox("الدور", ["admin","church_staff"], index=0 if u[4]=='admin' else 1, key=f"r{u[0]}")
 
-                if st.form_submit_button("حفظ"):
-                    if len(p) < 4:
-                        st.warning("كلمة السر ضعيفة")
-                    else:
-                        try:
-                            conn = get_db_connection()
+                    if st.button("تعديل", key=f"edit{u[0]}"):
+                        with get_conn() as conn:
                             c = conn.cursor()
-                            c.execute("INSERT INTO users VALUES (NULL,?,?,?,?,?)",
-                                      (u, hash_password(p), name, role, ch[0] if ch else None))
+                            c.execute("UPDATE users SET name=?, role=? WHERE id=?",
+                                      (new_name, new_role, u[0]))
                             conn.commit()
-                            st.success("تم الحفظ")
-                        except:
-                            st.error("اسم المستخدم مكرر")
-                        finally:
-                            conn.close()
+                        st.success("تم التعديل")
+                        st.rerun()
 
-            if st.button("رجوع"):
-                st.session_state.page = "home"
-                st.rerun()
+        # ================= BORROWERS =================
+        if page == "المقترضين":
+            st.header("المقترضين")
 
-        # ================= الكنائس =================
-        if page == "setup":
-            st.header("إدارة الكنائس")
+            with st.form("add_borrower"):
+                name = st.text_input("الاسم")
+                phone = st.text_input("الموبايل")
+                address = st.text_input("العنوان")
 
-            with st.form("add_church"):
-                name = st.text_input("اسم الكنيسة")
                 if st.form_submit_button("إضافة"):
-                    conn = get_db_connection()
-                    c = conn.cursor()
-                    c.execute("INSERT INTO churches VALUES (NULL,?,NULL)", (name,))
-                    conn.commit()
-                    conn.close()
+                    with get_conn() as conn:
+                        c = conn.cursor()
+                        c.execute("INSERT INTO borrowers VALUES (NULL,?,?,?,?)",
+                                  (name, phone, address, None))
+                        conn.commit()
                     st.success("تمت الإضافة")
 
-            # عرض الكنائس
-            conn = get_db_connection()
-            c = conn.cursor()
-            c.execute("SELECT * FROM churches")
-            data = c.fetchall()
-            conn.close()
+            with get_conn() as conn:
+                c = conn.cursor()
+                c.execute("SELECT * FROM borrowers")
+                data = c.fetchall()
 
-            for d in data:
-                st.write(f"🏛️ {d[1]}")
+            for b in data:
+                st.write(f"{b[1]} - {b[2]}")
 
-            if st.button("رجوع"):
-                st.session_state.page = "home"
-                st.rerun()
+        # ================= LOANS =================
+        if page == "القروض":
+            st.header("إضافة قرض")
 
-        # ================= الصفحة الرئيسية =================
-        if page == "home":
-            st.divider()
+            with get_conn() as conn:
+                c = conn.cursor()
+                c.execute("SELECT id,name FROM borrowers")
+                borrowers = c.fetchall()
 
-            # QR ديناميكي
-            base_url = "https://small-projects-support-app.streamlit.app"
-            user_url = f"{base_url}?ch={user['ch_id']}"
+            with st.form("loan"):
+                b = st.selectbox("المقترض", borrowers, format_func=lambda x: x[1])
+                amount = st.number_input("المبلغ")
+                months = st.number_input("عدد الشهور", step=1)
 
-            img = qrcode.make(user_url)
-            buf = BytesIO()
-            img.save(buf)
+                if st.form_submit_button("حفظ"):
+                    with get_conn() as conn:
+                        c = conn.cursor()
+                        c.execute("INSERT INTO loans VALUES (NULL,?,?,?,?)",
+                                  (b[0], amount, months, str(date.today())))
+                        loan_id = c.lastrowid
 
-            st.image(buf, caption="QR خاص بك", width=150)
-            st.code(user_url)
+                        monthly = amount / months
+                        for i in range(months):
+                            c.execute("INSERT INTO installments VALUES (NULL,?,?,?,0)",
+                                      (loan_id, str(date.today()), monthly))
 
-# تشغيل
-if __name__ == "__main__":
+                        conn.commit()
+                    st.success("تم إنشاء القرض")
+
+        # ================= INSTALLMENTS =================
+        if page == "الأقساط":
+            st.header("الأقساط")
+
+            with get_conn() as conn:
+                c = conn.cursor()
+                c.execute("SELECT * FROM installments")
+                data = c.fetchall()
+
+            for ins in data:
+                st.write(f"قسط {ins[0]} - {ins[3]} جنيه")
+                if not ins[4]:
+                    if st.button("تحصيل", key=ins[0]):
+                        with get_conn() as conn:
+                            c = conn.cursor()
+                            c.execute("UPDATE installments SET paid=1 WHERE id=?", (ins[0],))
+                            conn.commit()
+                        st.success("تم السداد")
+                        st.rerun()
+
+
+if __name__ == '__main__':
     main()
